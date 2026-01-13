@@ -1,24 +1,166 @@
-import { useRef, useState } from 'react';
-import {
-  Upload,
-  FolderOpen,
-  Settings,
-  Download,
-  Play,
-  Plus,
-  Trash2,
-  ChevronUp,
-  ChevronDown,
-} from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
+import GeneratedNFTs from './nft-generator/GeneratedNFTs';
+import GroupedDependencies from './nft-generator/GroupedDependencies';
+import LayerUploadCard from './nft-generator/LayerUploadCard';
+import SettingsCard from './nft-generator/SettingsCard';
+import TraitRestrictions from './nft-generator/TraitRestrictions';
+import UniquenessCard from './nft-generator/UniquenessCard';
 
 const NFTGenerator = () => {
   const [layers, setLayers] = useState([]);
   const [layerOrder, setLayerOrder] = useState([]);
   const [restrictions, setRestrictions] = useState([]);
+  const [groupRules, setGroupRules] = useState([]);
+  const [groupDependenciesExpanded, setGroupDependenciesExpanded] = useState(true);
   const [generatedNFTs, setGeneratedNFTs] = useState([]);
   const [generating, setGenerating] = useState(false);
   const [nftCount, setNftCount] = useState(10);
-  const fileInputRef = useRef(null);
+  const [preferredLayerOrder, setPreferredLayerOrder] = useState([]);
+  const [layerOrderCollapseKey, setLayerOrderCollapseKey] = useState(0);
+  const [generationProgress, setGenerationProgress] = useState({
+    generated: 0,
+    total: 0,
+  });
+  const imageCacheRef = useRef(new Map());
+
+  const formatCompactNumber = (value) => {
+    if (value === null || value === undefined) return 'n/a';
+    const str = value.toString();
+    if (str.length <= 6) {
+      return str.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+    const mantissa = `${str[0]}.${str.slice(1, 3)}`;
+    return `${mantissa}e+${str.length - 1}`;
+  };
+
+  const uniquenessStats = useMemo(() => {
+    if (layers.length === 0) {
+      return {
+        possibleCombinations: null,
+        diversityScore: null,
+        similarityScore: null,
+        coverage: [],
+      };
+    }
+
+    let possibleCombinations = 1n;
+    layers.forEach((layer) => {
+      const count = Math.max(layer.traits.length, 1);
+      possibleCombinations *= BigInt(count);
+    });
+
+    if (generatedNFTs.length === 0) {
+      return {
+        possibleCombinations,
+        diversityScore: null,
+        similarityScore: null,
+        coverage: [],
+      };
+    }
+
+    const total = generatedNFTs.length;
+    const countsByLayer = {};
+    layers.forEach((layer) => {
+      countsByLayer[layer.name] = {};
+    });
+
+    generatedNFTs.forEach((nft) => {
+      (nft.metadata?.attributes || []).forEach((attribute) => {
+        const layerName = attribute.trait_type;
+        const traitName = attribute.value;
+        if (!countsByLayer[layerName]) {
+          countsByLayer[layerName] = {};
+        }
+        countsByLayer[layerName][traitName] =
+          (countsByLayer[layerName][traitName] || 0) + 1;
+      });
+    });
+
+    const perLayerMatch = layers.map((layer) => {
+      const counts = countsByLayer[layer.name] || {};
+      const values = Object.values(counts);
+      if (values.length === 0) return 1;
+      return values.reduce((sum, count) => {
+        const share = count / total;
+        return sum + share * share;
+      }, 0);
+    });
+
+    const avgMatch =
+      perLayerMatch.reduce((sum, value) => sum + value, 0) / layers.length;
+    const diversityScore = Math.max(0, Math.min(1, 1 - avgMatch));
+
+    const coverage = layers.map((layer) => {
+      const counts = countsByLayer[layer.name] || {};
+      const usedTraits = Object.keys(counts).length;
+      const totalTraits = Math.max(layer.traits.length, 1);
+      let topTrait = null;
+      let topCount = 0;
+
+      Object.entries(counts).forEach(([name, count]) => {
+        if (count > topCount) {
+          topTrait = name;
+          topCount = count;
+        }
+      });
+
+      return {
+        name: layer.name,
+        usedTraits,
+        totalTraits,
+        coverageRatio: usedTraits / totalTraits,
+        topTrait,
+        topShare: total ? topCount / total : 0,
+      };
+    });
+
+    return {
+      possibleCombinations,
+      diversityScore,
+      similarityScore: avgMatch,
+      coverage,
+    };
+  }, [generatedNFTs, layers]);
+
+  const diversityPercent =
+    uniquenessStats?.diversityScore !== null && uniquenessStats?.diversityScore !== undefined
+      ? Math.round(uniquenessStats.diversityScore * 100)
+      : null;
+  const similarityLabel =
+    diversityPercent === null
+      ? null
+      : diversityPercent >= 75
+        ? 'Low'
+        : diversityPercent >= 55
+          ? 'Medium'
+          : 'High';
+  const similarityColor =
+    diversityPercent === null
+      ? 'text-blue-200'
+      : diversityPercent >= 75
+        ? 'text-emerald-300'
+        : diversityPercent >= 55
+          ? 'text-amber-300'
+          : 'text-rose-300';
+  const uniquenessBarClass =
+    diversityPercent === null
+      ? 'from-blue-400 to-indigo-500'
+      : diversityPercent >= 75
+        ? 'from-emerald-400 to-teal-500'
+        : diversityPercent >= 55
+          ? 'from-amber-400 to-orange-500'
+          : 'from-rose-400 to-red-500';
+  const requestedExceedsPossible =
+    uniquenessStats?.possibleCombinations !== null &&
+    uniquenessStats?.possibleCombinations !== undefined &&
+    BigInt(nftCount) > uniquenessStats.possibleCombinations;
+  const progressPercent =
+    generationProgress.total > 0
+      ? Math.min(
+          100,
+          Math.round((generationProgress.generated / generationProgress.total) * 100)
+        )
+      : 0;
 
   const handleFolderUpload = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -67,8 +209,9 @@ const NFTGenerator = () => {
       return;
     }
 
+    imageCacheRef.current = new Map();
     setLayers(newLayers);
-    setLayerOrder(newLayers.map((layer, index) => ({ name: layer.name, order: index })));
+    setLayerOrder(buildLayerOrder(newLayers, preferredLayerOrder));
   };
 
   const updateLayerOrder = (layerName, newOrder) => {
@@ -122,8 +265,25 @@ const NFTGenerator = () => {
     ]);
   };
 
+  const addGroupRule = () => {
+    setGroupRules([
+      ...groupRules,
+      {
+        id: Date.now(),
+        sourceLayer: '',
+        sourceTraits: [],
+        targetLayer: '',
+        targetTraits: [],
+      },
+    ]);
+  };
+
   const removeRestriction = (id) => {
     setRestrictions(restrictions.filter((restriction) => restriction.id !== id));
+  };
+
+  const removeGroupRule = (id) => {
+    setGroupRules(groupRules.filter((rule) => rule.id !== id));
   };
 
   const updateRestriction = (id, field, value) => {
@@ -132,6 +292,220 @@ const NFTGenerator = () => {
         restriction.id === id ? { ...restriction, [field]: value } : restriction
       )
     );
+  };
+
+  const updateGroupRule = (id, field, value) => {
+    setGroupRules(
+      groupRules.map((rule) => {
+        if (rule.id !== id) return rule;
+        if (field === 'sourceLayer') {
+          return { ...rule, sourceLayer: value, sourceTraits: [] };
+        }
+        if (field === 'targetLayer') {
+          return { ...rule, targetLayer: value, targetTraits: [] };
+        }
+        return { ...rule, [field]: value };
+      })
+    );
+  };
+
+  const normalizeTraitArray = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) {
+      return value.filter((item) => typeof item === 'string' && item.trim());
+    }
+    if (typeof value === 'string') {
+      return value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+    return [];
+  };
+
+  function normalizeLayerOrderNames(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') {
+          return item.name || item.layer || item.layerName || '';
+        }
+        return '';
+      })
+      .map((name) => name.trim())
+      .filter(Boolean);
+  }
+
+  function buildLayerOrder(layersList, orderedNames) {
+    if (!Array.isArray(layersList) || layersList.length === 0) return [];
+    const fallback = layersList.map((layer, index) => ({ name: layer.name, order: index }));
+    if (!Array.isArray(orderedNames) || orderedNames.length === 0) return fallback;
+
+    const nameOrder = new Map();
+    orderedNames.forEach((name, index) => {
+      const key = name.toLowerCase();
+      if (!nameOrder.has(key)) {
+        nameOrder.set(key, index);
+      }
+    });
+
+    let nextOrder = nameOrder.size;
+    const ordered = layersList.map((layer) => {
+      const key = layer.name.toLowerCase();
+      if (nameOrder.has(key)) {
+        return { name: layer.name, order: nameOrder.get(key) };
+      }
+      return { name: layer.name, order: nextOrder++ };
+    });
+
+    return ordered.sort((a, b) => a.order - b.order);
+  }
+
+  const normalizeRuleSet = (data) => {
+    const rawRestrictions = Array.isArray(data?.restrictions) ? data.restrictions : [];
+    const rawGroupRules = Array.isArray(data?.groupRules)
+      ? data.groupRules
+      : Array.isArray(data?.dependencies)
+        ? data.dependencies
+        : [];
+    const rawLayerOrder = Array.isArray(data?.layersOrder)
+      ? data.layersOrder
+      : Array.isArray(data?.layerOrder)
+        ? data.layerOrder
+        : Array.isArray(data?.layersorder)
+          ? data.layersorder
+          : [];
+
+    const restrictions = rawRestrictions
+      .filter((item) => item && typeof item === 'object')
+      .map((item, index) => ({
+        id: Date.now() + index,
+        type: item.type === 'required' ? 'required' : 'incompatible',
+        layer1: item.layer1 || '',
+        trait1: item.trait1 || '',
+        layer2: item.layer2 || '',
+        trait2: item.trait2 || '',
+      }))
+      .filter(
+        (item) =>
+          item.layer1 ||
+          item.trait1 ||
+          item.layer2 ||
+          item.trait2
+      );
+
+    const groupRules = rawGroupRules
+      .filter((item) => item && typeof item === 'object')
+      .map((item, index) => {
+        if (item.if && item.then) {
+          return {
+            id: Date.now() + index,
+            sourceLayer: item.if.layer || '',
+            sourceTraits: normalizeTraitArray(item.if.traits),
+            targetLayer: item.then.layer || '',
+            targetTraits: normalizeTraitArray(item.then.traits),
+          };
+        }
+
+        return {
+          id: Date.now() + index,
+          sourceLayer: item.sourceLayer || '',
+          sourceTraits: normalizeTraitArray(item.sourceTraits),
+          targetLayer: item.targetLayer || '',
+          targetTraits: normalizeTraitArray(item.targetTraits),
+        };
+      })
+      .filter(
+        (rule) =>
+          rule.sourceLayer ||
+          rule.targetLayer ||
+          rule.sourceTraits.length > 0 ||
+          rule.targetTraits.length > 0
+      );
+
+    return {
+      restrictions,
+      groupRules,
+      layerOrderNames: normalizeLayerOrderNames(rawLayerOrder),
+    };
+  };
+
+  const toggleGroupRuleTrait = (id, field, traitName) => {
+    setGroupRules(
+      groupRules.map((rule) => {
+        if (rule.id !== id) return rule;
+        const current = rule[field] || [];
+        const next = current.includes(traitName)
+          ? current.filter((name) => name !== traitName)
+          : [...current, traitName];
+        return { ...rule, [field]: next };
+      })
+    );
+  };
+
+  const setGroupRuleTraits = (id, field, traits) => {
+    setGroupRules(
+      groupRules.map((rule) => (rule.id === id ? { ...rule, [field]: traits } : rule))
+    );
+  };
+
+  const handleRulesImport = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (loadEvent) => {
+      try {
+        const text = loadEvent.target?.result || '';
+        const parsed = JSON.parse(text);
+        const {
+          restrictions: importedRestrictions,
+          groupRules: importedGroupRules,
+          layerOrderNames,
+        } = normalizeRuleSet(parsed);
+
+        setRestrictions(importedRestrictions);
+        setGroupRules(importedGroupRules);
+        setPreferredLayerOrder(layerOrderNames);
+        if (layers.length > 0 && layerOrderNames.length > 0) {
+          setLayerOrder(buildLayerOrder(layers, layerOrderNames));
+        }
+        setGroupDependenciesExpanded(false);
+      } catch (error) {
+        console.error('Failed to import rules:', error);
+        alert('Invalid rules JSON. Please check the file format.');
+      }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  };
+
+  const exportRules = () => {
+    const payload = {
+      groupRules: groupRules.map((rule) => ({
+        sourceLayer: rule.sourceLayer,
+        sourceTraits: rule.sourceTraits,
+        targetLayer: rule.targetLayer,
+        targetTraits: rule.targetTraits,
+      })),
+      restrictions: restrictions.map((rule) => ({
+        type: rule.type,
+        layer1: rule.layer1,
+        trait1: rule.trait1,
+        layer2: rule.layer2,
+        trait2: rule.trait2,
+      })),
+    };
+
+    const dataStr = JSON.stringify(payload, null, 2);
+    const dataBlob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(dataBlob);
+    const link = document.createElement('a');
+    link.download = 'nft-rules.json';
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const checkRestrictions = (combination) => {
@@ -152,6 +526,30 @@ const NFTGenerator = () => {
         return false;
       }
     }
+
+    for (const rule of groupRules) {
+      if (
+        !rule.sourceLayer ||
+        !rule.targetLayer ||
+        rule.sourceTraits.length === 0 ||
+        rule.targetTraits.length === 0
+      ) {
+        continue;
+      }
+
+      const sourceTrait = combination.find((item) => item.layerName === rule.sourceLayer);
+      const targetTrait = combination.find((item) => item.layerName === rule.targetLayer);
+
+      if (!sourceTrait || !targetTrait) continue;
+
+      if (
+        rule.sourceTraits.includes(sourceTrait.traitName) &&
+        !rule.targetTraits.includes(targetTrait.traitName)
+      ) {
+        return false;
+      }
+    }
+
     return true;
   };
 
@@ -164,6 +562,18 @@ const NFTGenerator = () => {
       if (random <= 0) return trait;
     }
     return traits[traits.length - 1];
+  };
+
+  const loadImageFromUrl = (url, label) => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = (err) => {
+        console.error('Failed to load image:', label || url, err);
+        reject(err);
+      };
+      img.src = url;
+    });
   };
 
   const loadImageFromFile = (file) => {
@@ -183,14 +593,54 @@ const NFTGenerator = () => {
     });
   };
 
+  const loadTraitImage = async (trait) => {
+    if (!trait) return null;
+    const cacheKey = trait.url || trait.file;
+    if (imageCacheRef.current.has(cacheKey)) {
+      return imageCacheRef.current.get(cacheKey);
+    }
+
+    const loader = (async () => {
+      if (typeof createImageBitmap === 'function' && trait.file) {
+        try {
+          return await createImageBitmap(trait.file);
+        } catch (error) {
+          console.warn('Falling back to Image element for', trait.name, error);
+        }
+      }
+      if (trait.url) {
+        return await loadImageFromUrl(trait.url, trait.name);
+      }
+      if (trait.file) {
+        return await loadImageFromFile(trait.file);
+      }
+      return null;
+    })();
+
+    imageCacheRef.current.set(cacheKey, loader);
+    return loader;
+  };
+
   const generateNFTs = async () => {
     if (layers.length === 0) {
       alert('Please upload layer folders first!');
       return;
     }
 
+    const targetCount = Math.max(1, Number(nftCount) || 1);
+    const maxAttempts = targetCount * 100;
+
     setGenerating(true);
+    setGeneratedNFTs([]);
+    setGenerationProgress({
+      generated: 0,
+      total: targetCount,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
     const generated = [];
+    const seenKeys = new Set();
     const orderedLayers = [...layerOrder]
       .sort((a, b) => a.order - b.order)
       .map((order) => layers.find((layer) => layer.name === order.name))
@@ -198,11 +648,25 @@ const NFTGenerator = () => {
 
     console.log('Starting generation with layers:', orderedLayers.map((layer) => layer.name));
 
-    let attempts = 0;
-    const maxAttempts = nftCount * 100;
+    const canvas = document.createElement('canvas');
+    canvas.width = 1000;
+    canvas.height = 1000;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      console.error('Failed to create canvas context for generation.');
+      setGenerating(false);
+      return;
+    }
 
-    while (generated.length < nftCount && attempts < maxAttempts) {
+    let attempts = 0;
+    const progressUpdateInterval = 25;
+
+    while (generated.length < targetCount && attempts < maxAttempts) {
       attempts += 1;
+
+      if (attempts % progressUpdateInterval === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
       const combination = [];
 
       for (const layer of orderedLayers) {
@@ -219,16 +683,16 @@ const NFTGenerator = () => {
       const combinationKey = combination
         .map((item) => `${item.layerName}-${item.traitName}`)
         .join('|');
-      if (generated.some((item) => item.key === combinationKey)) continue;
-
-      const canvas = document.createElement('canvas');
-      canvas.width = 1000;
-      canvas.height = 1000;
-      const ctx = canvas.getContext('2d');
+      if (seenKeys.has(combinationKey)) continue;
+      seenKeys.add(combinationKey);
 
       try {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
         for (const item of combination) {
-          const img = await loadImageFromFile(item.trait.file);
+          const img = await loadTraitImage(item.trait);
+          if (!img) {
+            throw new Error(`Missing image for trait ${item.trait?.name || ''}`);
+          }
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         }
 
@@ -249,7 +713,13 @@ const NFTGenerator = () => {
           metadata,
         });
 
-        console.log(`Generated NFT ${generated.length}/${nftCount}`);
+        setGenerationProgress((current) => ({
+          ...current,
+          generated: generated.length,
+        }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        console.log(`Generated NFT ${generated.length}/${targetCount}`);
       } catch (error) {
         console.error('Error generating NFT:', error);
         console.error(
@@ -261,7 +731,12 @@ const NFTGenerator = () => {
 
     console.log(`Generation complete: ${generated.length} NFTs created`);
     setGeneratedNFTs(generated);
+    setGenerationProgress((current) => ({
+      ...current,
+      generated: generated.length,
+    }));
     setGenerating(false);
+    setLayerOrderCollapseKey((value) => value + 1);
   };
 
   const downloadNFT = (nft) => {
@@ -300,265 +775,79 @@ const NFTGenerator = () => {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-          <div className="lg:col-span-2 bg-white bg-opacity-10 backdrop-blur-lg rounded-xl p-6 border border-white border-opacity-20">
-            <div className="flex items-center gap-2 mb-4">
-              <FolderOpen className="text-blue-300" size={24} />
-              <h2 className="text-2xl font-bold text-white">Upload Layers</h2>
-            </div>
+          <LayerUploadCard
+            layers={layers}
+            layerOrder={layerOrder}
+            onUpload={handleFolderUpload}
+            onMoveLayerUp={moveLayerUp}
+            onMoveLayerDown={moveLayerDown}
+            onUpdateLayerOrder={updateLayerOrder}
+            collapseSignal={layerOrderCollapseKey}
+          />
 
-            <input
-              ref={fileInputRef}
-              type="file"
-              webkitdirectory="true"
-              directory="true"
-              multiple
-              onChange={handleFolderUpload}
-              className="hidden"
+          <div className="space-y-6">
+            <SettingsCard
+              nftCount={nftCount}
+              onNftCountChange={(event) =>
+                setNftCount(parseInt(event.target.value, 10) || 1)
+              }
+              onGenerate={generateNFTs}
+              generating={generating}
+              layersCount={layers.length}
+              generatedCount={generatedNFTs.length}
+              onDownloadAll={downloadAll}
+              generationProgress={generationProgress}
+              progressPercent={progressPercent}
             />
 
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="w-full bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white font-bold py-4 px-6 rounded-lg flex items-center justify-center gap-2 transition-all"
-            >
-              <Upload size={20} />
-              Select Folder with Layers
-            </button>
-
-            {layers.length > 0 && (
-              <div className="mt-6 space-y-4">
-                <h3 className="text-xl font-bold text-white mb-3">Layer Order</h3>
-                {layerOrder.map((order, index) => {
-                  const layer = layers.find((item) => item.name === order.name);
-                  return (
-                    <div key={order.name} className="bg-white bg-opacity-10 p-4 rounded-lg">
-                      <div className="flex items-center gap-4">
-                        <div className="flex flex-col gap-1">
-                          <button
-                            onClick={() => moveLayerUp(order.name)}
-                            disabled={index === 0}
-                            className="bg-white bg-opacity-20 hover:bg-opacity-30 disabled:opacity-30 disabled:cursor-not-allowed text-white p-1 rounded transition-all"
-                            title="Move up"
-                          >
-                            <ChevronUp size={20} />
-                          </button>
-                          <button
-                            onClick={() => moveLayerDown(order.name)}
-                            disabled={index === layerOrder.length - 1}
-                            className="bg-white bg-opacity-20 hover:bg-opacity-30 disabled:opacity-30 disabled:cursor-not-allowed text-white p-1 rounded transition-all"
-                            title="Move down"
-                          >
-                            <ChevronDown size={20} />
-                          </button>
-                        </div>
-                        <input
-                          type="number"
-                          value={order.order}
-                          onChange={(event) => updateLayerOrder(order.name, event.target.value)}
-                          className="w-20 bg-white bg-opacity-20 text-white px-3 py-2 rounded border border-white border-opacity-30"
-                          min="0"
-                        />
-                        <div className="flex-1">
-                          <p className="text-white font-semibold">{order.name}</p>
-                          <p className="text-blue-200 text-sm">{layer?.traits.length} traits</p>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          <div className="bg-white bg-opacity-10 backdrop-blur-lg rounded-xl p-6 border border-white border-opacity-20">
-            <div className="flex items-center gap-2 mb-4">
-              <Settings className="text-blue-300" size={24} />
-              <h2 className="text-2xl font-bold text-white">Settings</h2>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="text-white block mb-2">Number of NFTs</label>
-                <input
-                  type="number"
-                  value={nftCount}
-                  onChange={(event) => setNftCount(parseInt(event.target.value, 10) || 1)}
-                  className="w-full bg-white bg-opacity-20 text-white px-4 py-2 rounded border border-white border-opacity-30"
-                  min="1"
-                  max="10000"
-                />
-              </div>
-
-              <button
-                onClick={generateNFTs}
-                disabled={generating || layers.length === 0}
-                className="w-full bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 disabled:from-gray-500 disabled:to-gray-600 text-white font-bold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-all"
-              >
-                <Play size={20} />
-                {generating ? 'Generating...' : 'Generate NFTs'}
-              </button>
-
-              {generatedNFTs.length > 0 && (
-                <button
-                  onClick={downloadAll}
-                  className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white font-bold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-all"
-                >
-                  <Download size={20} />
-                  Download All
-                </button>
-              )}
-            </div>
+            <UniquenessCard
+              layers={layers}
+              uniquenessStats={uniquenessStats}
+              diversityPercent={diversityPercent}
+              similarityLabel={similarityLabel}
+              similarityColor={similarityColor}
+              uniquenessBarClass={uniquenessBarClass}
+              requestedExceedsPossible={requestedExceedsPossible}
+              formatCompactNumber={formatCompactNumber}
+            />
           </div>
         </div>
 
         {layers.length > 0 && (
-          <div className="bg-white bg-opacity-10 backdrop-blur-lg rounded-xl p-6 border border-white border-opacity-20 mb-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold text-white">Trait Restrictions</h2>
-              <button
-                onClick={addRestriction}
-                className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-all"
-              >
-                <Plus size={20} />
-                Add Rule
-              </button>
-            </div>
+          <div className="space-y-6 mb-6">
+            <TraitRestrictions
+              restrictions={restrictions}
+              layers={layers}
+              onAddRestriction={addRestriction}
+              onUpdateRestriction={updateRestriction}
+              onRemoveRestriction={removeRestriction}
+            />
 
-            <div className="space-y-4">
-              {restrictions.map((restriction) => (
-                <div
-                  key={restriction.id}
-                  className="bg-white bg-opacity-10 p-4 rounded-lg flex gap-4 items-center"
-                >
-                  <select
-                    value={restriction.type}
-                    onChange={(event) =>
-                      updateRestriction(restriction.id, 'type', event.target.value)
-                    }
-                    className="bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 focus:border-blue-400 focus:outline-none"
-                    style={{ colorScheme: 'dark' }}
-                  >
-                    <option value="incompatible">Incompatible</option>
-                    <option value="required">Required</option>
-                  </select>
-
-                  <select
-                    value={restriction.layer1}
-                    onChange={(event) =>
-                      updateRestriction(restriction.id, 'layer1', event.target.value)
-                    }
-                    className="flex-1 bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 focus:border-blue-400 focus:outline-none"
-                    style={{ colorScheme: 'dark' }}
-                  >
-                    <option value="">Select Layer</option>
-                    {layers.map((layer) => (
-                      <option key={layer.name} value={layer.name}>
-                        {layer.name}
-                      </option>
-                    ))}
-                  </select>
-
-                  <select
-                    value={restriction.trait1}
-                    onChange={(event) =>
-                      updateRestriction(restriction.id, 'trait1', event.target.value)
-                    }
-                    className="flex-1 bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 focus:border-blue-400 focus:outline-none disabled:opacity-50"
-                    style={{ colorScheme: 'dark' }}
-                    disabled={!restriction.layer1}
-                  >
-                    <option value="">Select Trait</option>
-                    {layers
-                      .find((layer) => layer.name === restriction.layer1)
-                      ?.traits.map((trait) => (
-                        <option key={trait.name} value={trait.name}>
-                          {trait.name}
-                        </option>
-                      ))}
-                  </select>
-
-                  <span className="text-white font-bold">&</span>
-
-                  <select
-                    value={restriction.layer2}
-                    onChange={(event) =>
-                      updateRestriction(restriction.id, 'layer2', event.target.value)
-                    }
-                    className="flex-1 bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 focus:border-blue-400 focus:outline-none"
-                    style={{ colorScheme: 'dark' }}
-                  >
-                    <option value="">Select Layer</option>
-                    {layers.map((layer) => (
-                      <option key={layer.name} value={layer.name}>
-                        {layer.name}
-                      </option>
-                    ))}
-                  </select>
-
-                  <select
-                    value={restriction.trait2}
-                    onChange={(event) =>
-                      updateRestriction(restriction.id, 'trait2', event.target.value)
-                    }
-                    className="flex-1 bg-gray-800 text-white px-3 py-2 rounded border border-gray-600 focus:border-blue-400 focus:outline-none disabled:opacity-50"
-                    style={{ colorScheme: 'dark' }}
-                    disabled={!restriction.layer2}
-                  >
-                    <option value="">Select Trait</option>
-                    {layers
-                      .find((layer) => layer.name === restriction.layer2)
-                      ?.traits.map((trait) => (
-                        <option key={trait.name} value={trait.name}>
-                          {trait.name}
-                        </option>
-                      ))}
-                  </select>
-
-                  <button
-                    onClick={() => removeRestriction(restriction.id)}
-                    className="bg-red-500 hover:bg-red-600 text-white p-2 rounded transition-all"
-                  >
-                    <Trash2 size={20} />
-                  </button>
-                </div>
-              ))}
-            </div>
+            <GroupedDependencies
+              groupRules={groupRules}
+              layers={layers}
+              onAddGroupRule={addGroupRule}
+              onRemoveGroupRule={removeGroupRule}
+              onUpdateGroupRule={updateGroupRule}
+              onToggleTrait={toggleGroupRuleTrait}
+              onSetTraits={setGroupRuleTraits}
+              onImportRules={handleRulesImport}
+              onExportRules={exportRules}
+              exportDisabled={groupRules.length === 0 && restrictions.length === 0}
+              expanded={groupDependenciesExpanded}
+              onToggle={() =>
+                setGroupDependenciesExpanded((current) => !current)
+              }
+            />
           </div>
         )}
 
         {generatedNFTs.length > 0 && (
-          <div className="bg-white bg-opacity-10 backdrop-blur-lg rounded-xl p-6 border border-white border-opacity-20">
-            <h2 className="text-2xl font-bold text-white mb-4">
-              Generated NFTs ({generatedNFTs.length})
-            </h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {generatedNFTs.map((nft) => (
-                <div key={nft.id} className="bg-white bg-opacity-10 rounded-lg overflow-hidden">
-                  <img
-                    src={nft.image}
-                    alt={`NFT ${nft.id}`}
-                    className="w-full aspect-square object-cover"
-                  />
-                  <div className="p-3">
-                    <p className="text-white font-semibold mb-2">NFT #{nft.id}</p>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => downloadNFT(nft)}
-                        className="flex-1 bg-blue-500 hover:bg-blue-600 text-white text-sm py-2 rounded transition-all"
-                      >
-                        Image
-                      </button>
-                      <button
-                        onClick={() => downloadMetadata(nft)}
-                        className="flex-1 bg-purple-500 hover:bg-purple-600 text-white text-sm py-2 rounded transition-all"
-                      >
-                        JSON
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <GeneratedNFTs
+            generatedNFTs={generatedNFTs}
+            onDownloadNFT={downloadNFT}
+            onDownloadMetadata={downloadMetadata}
+          />
         )}
       </div>
     </div>
