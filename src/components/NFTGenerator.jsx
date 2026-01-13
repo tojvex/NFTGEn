@@ -274,6 +274,7 @@ const NFTGenerator = () => {
         sourceTraits: [],
         targetLayer: '',
         targetTraits: [],
+        mode: 'require',
       },
     ]);
   };
@@ -335,6 +336,37 @@ const NFTGenerator = () => {
       })
       .map((name) => name.trim())
       .filter(Boolean);
+  }
+
+  function normalizeGroupRuleMode(value) {
+    if (typeof value !== 'string') return null;
+    const cleaned = value.trim().toLowerCase();
+    if (cleaned === 'exclude' || cleaned === 'excluded' || cleaned === 'forbid' || cleaned === 'ban') {
+      return 'exclude';
+    }
+    if (cleaned === 'require' || cleaned === 'required') {
+      return 'require';
+    }
+    return null;
+  }
+
+  function getGroupRuleMode(rule) {
+    if (rule?.then?.exclude === true || rule?.exclude === true) {
+      return 'exclude';
+    }
+    const candidates = [
+      rule?.then?.type,
+      rule?.then?.mode,
+      rule?.then?.action,
+      rule?.type,
+      rule?.mode,
+      rule?.action,
+    ];
+    for (const candidate of candidates) {
+      const normalized = normalizeGroupRuleMode(candidate);
+      if (normalized) return normalized;
+    }
+    return 'require';
   }
 
   function buildLayerOrder(layersList, orderedNames) {
@@ -401,6 +433,7 @@ const NFTGenerator = () => {
         if (item.if && item.then) {
           return {
             id: Date.now() + index,
+            mode: getGroupRuleMode(item),
             sourceLayer: item.if.layer || '',
             sourceTraits: normalizeTraitArray(item.if.traits),
             targetLayer: item.then.layer || '',
@@ -410,6 +443,7 @@ const NFTGenerator = () => {
 
         return {
           id: Date.now() + index,
+          mode: getGroupRuleMode(item),
           sourceLayer: item.sourceLayer || '',
           sourceTraits: normalizeTraitArray(item.sourceTraits),
           targetLayer: item.targetLayer || '',
@@ -488,6 +522,7 @@ const NFTGenerator = () => {
         sourceTraits: rule.sourceTraits,
         targetLayer: rule.targetLayer,
         targetTraits: rule.targetTraits,
+        type: rule.mode === 'exclude' ? 'exclude' : 'require',
       })),
       restrictions: restrictions.map((rule) => ({
         type: rule.type,
@@ -542,11 +577,20 @@ const NFTGenerator = () => {
 
       if (!sourceTrait || !targetTrait) continue;
 
-      if (
-        rule.sourceTraits.includes(sourceTrait.traitName) &&
-        !rule.targetTraits.includes(targetTrait.traitName)
-      ) {
-        return false;
+      if (rule.mode === 'exclude') {
+        if (
+          rule.sourceTraits.includes(sourceTrait.traitName) &&
+          rule.targetTraits.includes(targetTrait.traitName)
+        ) {
+          return false;
+        }
+      } else {
+        if (
+          rule.sourceTraits.includes(sourceTrait.traitName) &&
+          !rule.targetTraits.includes(targetTrait.traitName)
+        ) {
+          return false;
+        }
       }
     }
 

@@ -75,15 +75,20 @@ const GroupedDependencies = ({
           </p>
 
           <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-            {groupRules.map((rule) => {
-              const sourceTraits =
-                layers.find((layer) => layer.name === rule.sourceLayer)?.traits || [];
-              const targetTraits =
-                layers.find((layer) => layer.name === rule.targetLayer)?.traits || [];
-              return (
-                <div key={rule.id} className="bg-white bg-opacity-10 p-4 rounded-lg space-y-3">
-                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                    <div className="space-y-2">
+        {groupRules.map((rule) => {
+          const sourceTraits =
+            layers.find((layer) => layer.name === rule.sourceLayer)?.traits || [];
+          const targetTraits =
+            layers.find((layer) => layer.name === rule.targetLayer)?.traits || [];
+          const mode = rule.mode === 'exclude' ? 'exclude' : 'require';
+          const ruleSummary =
+            mode === 'exclude'
+              ? 'Rule: if any selected trait appears in the left layer, the right layer cannot be any selected traits.'
+              : 'Rule: if any selected trait appears in the left layer, the right layer must be one of its selected traits.';
+          return (
+            <div key={rule.id} className="bg-white bg-opacity-10 p-4 rounded-lg space-y-3">
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <label className="text-sm text-blue-200">If layer</label>
                         <span className="text-xs text-blue-200">
@@ -168,10 +173,23 @@ const GroupedDependencies = ({
 
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <label className="text-sm text-blue-200">Then require</label>
-                        <span className="text-xs text-blue-200">
-                          {rule.targetTraits.length} selected
-                        </span>
+                        <label className="text-sm text-blue-200">Then</label>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={mode}
+                            onChange={(event) =>
+                              onUpdateGroupRule(rule.id, 'mode', event.target.value)
+                            }
+                            className="bg-gray-800 text-white text-xs px-2 py-1 rounded border border-gray-600 focus:border-blue-400 focus:outline-none"
+                            style={{ colorScheme: 'dark' }}
+                          >
+                            <option value="require">Require</option>
+                            <option value="exclude">Exclude</option>
+                          </select>
+                          <span className="text-xs text-blue-200">
+                            {rule.targetTraits.length} selected
+                          </span>
+                        </div>
                       </div>
                       <select
                         value={rule.targetLayer}
@@ -251,10 +269,7 @@ const GroupedDependencies = ({
                   </div>
 
                   <div className="flex items-center justify-between text-xs text-blue-200">
-                    <span>
-                      Rule: if any selected trait appears in the left layer, the right layer must be
-                      one of its selected traits.
-                    </span>
+                    <span>{ruleSummary}</span>
                     <button
                       onClick={() => onRemoveGroupRule(rule.id)}
                       className="bg-red-500 hover:bg-red-600 text-white p-2 rounded transition-all"
